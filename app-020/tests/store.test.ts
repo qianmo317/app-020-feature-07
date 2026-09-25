@@ -77,7 +77,7 @@ describe('store 响应性（useSyncExternalStore 依赖的引用语义）', () =
     expect(r1.version).toBe(r0.version + 1);
     resetRules('office');
     expect(snap().rules.office.extinguisherRadiusM).toBe(r0.extinguisherRadiusM);
-    expect(snap().rules.office.version).toBe(1);
+    expect(snap().rules.office.version).toBe(2);
   });
 });
 

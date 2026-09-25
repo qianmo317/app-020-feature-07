@@ -63,6 +63,9 @@ export function PrintPage({ floorId }: { floorId: string }) {
 
   const p = PAPER[paper];
   const result = floor.lastValidation;
+  const exitAlerts = result
+    ? Object.fromEntries(result.exitLoads.map((l) => [l.facilityId, { assigned: l.assigned, capacity: l.capacity, overflow: l.overflow }]))
+    : {};
   const barM = niceScaleBarM(80 / (scaleInfo || 0.05) / 1000);
 
   // 整改清单：不合规项 + 过期/缺失检查
@@ -207,6 +210,7 @@ export function PrintPage({ floorId }: { floorId: string }) {
               coverageCells={null}
               highlight={null}
               markPt={mark ?? { x: (bboxOf(floor.rooms.map((r) => r.polygon)).minX + bboxOf(floor.rooms.map((r) => r.polygon)).maxX) / 2, y: 0 }}
+              exitAlerts={exitAlerts}
               onMarkPointerDown={onMarkDown}
             />
             {/* 比例尺 */}
@@ -247,7 +251,11 @@ export function PrintPage({ floorId }: { floorId: string }) {
         <div className="sheet-foot">
           {result ? (
             <>
-              <span>校验结论：{result.pass ? '合规' : '存在不合规项'} · 疏散最远 {result.travelWorstM != null ? `${result.travelWorstM.toFixed(1)}m` : '—'}（限值 {result.rulesSnapshot.maxTravelDistanceM}m） · 规则 {result.rulesSnapshot.buildingKind} v{result.rulesSnapshot.version}</span>
+              <span>
+                校验结论：{result.pass ? '合规' : '存在不合规项'} · 人数 {result.occupancy.occupants}{result.occupancy.estimated > 0 ? `（约 ${result.occupancy.estimated} 人为估算）` : ''}
+                {' '}· 疏散宽度 {result.occupancy.availableWidthM.toFixed(2)}/{result.occupancy.requiredWidthM.toFixed(2)}m（{result.occupancy.widthPer100M.toFixed(2)}m/百人）
+                {' '}· 疏散最远 {result.travelWorstM != null ? `${result.travelWorstM.toFixed(1)}m` : '—'}（限值 {result.rulesSnapshot.maxTravelDistanceM}m） · 规则 {result.rulesSnapshot.buildingKind} v{result.rulesSnapshot.version}
+              </span>
               <span>依据文号：{result.rulesSnapshot.source} ｜ 校验时间：{new Date(result.checkedAt).toLocaleString('zh-CN')}</span>
             </>
           ) : (

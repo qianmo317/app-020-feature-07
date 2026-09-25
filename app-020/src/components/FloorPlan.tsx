@@ -1,6 +1,9 @@
 import { memo, type PointerEvent as RPointerEvent, type WheelEvent as RWheelEvent } from 'react';
 import type { FacilityKind, Floor, Facility, Pt, Room } from '../model';
 import { USAGE_FILLS, FacilityGlyph } from './symbols';
+import { estimateOccupants, estimateOccupantsByArea, occupantsExplicit } from '../lib/engine';
+
+export type ExitAlert = { assigned: number; capacity: number; overflow: number };
 
 export type Tool = 'select' | 'pan' | 'room' | 'corridor' | FacilityKind;
 export type Selection = { type: 'room' | 'facility'; id: string } | null;
@@ -36,6 +39,9 @@ const RoomShape = memo(function RoomShape({
   const pts = room.polygon.map((p) => `${p.x + delta.x},${p.y + delta.y}`).join(' ');
   const cx = room.polygon.reduce((s, p) => s + p.x, 0) / room.polygon.length + delta.x;
   const cy = room.polygon.reduce((s, p) => s + p.y, 0) / room.polygon.length + delta.y;
+  const explicit = occupantsExplicit(room);
+  const people = estimateOccupants(room);
+  const peopleLabel = explicit ? `${people} 人（实填）` : people > 0 ? `约 ${people} 人` : '';
   return (
     <g
       onPointerDown={(e) => {
@@ -63,6 +69,11 @@ const RoomShape = memo(function RoomShape({
         <tspan x={cx} dy={480} fontSize={320} fill="#888">
           {room.areaM2.toFixed(1)}㎡
         </tspan>
+        {peopleLabel && (
+          <tspan x={cx} dy={420} fontSize={320} fontWeight={explicit ? 'bold' : 'normal'} fill={explicit ? '#1b5e20' : '#9e9e9e'}>
+            {peopleLabel}
+          </tspan>
+        )}
       </text>
     </g>
   );
@@ -72,15 +83,18 @@ const FacilityShape = memo(function FacilityShape({
   fac,
   selected,
   delta,
+  alert,
   onPointerDown,
 }: {
   fac: Facility;
   selected: boolean;
   delta: Pt;
+  alert?: ExitAlert;
   onPointerDown: (e: RPointerEvent<SVGGElement>, fac: Facility) => void;
 }) {
   const x = fac.x + delta.x;
   const y = fac.y + delta.y;
+  const overloaded = alert ? alert.overflow > 0 : false;
   return (
     <g
       transform={`translate(${x},${y})`}
@@ -91,10 +105,24 @@ const FacilityShape = memo(function FacilityShape({
       style={{ cursor: 'pointer' }}
     >
       {selected && <circle r={900} fill="none" stroke="#1976d2" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+      {overloaded && (
+        <g style={{ pointerEvents: 'none' }}>
+          <circle r={1300} fill="none" stroke="#e53935" strokeWidth={4} strokeDasharray="350 220" vectorEffect="non-scaling-stroke">
+            <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="6s" repeatCount="indefinite" />
+          </circle>
+          <circle cx={1050} cy={-1050} r={380} fill="#e53935" stroke="#fff" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+          <text x={1050} y={-910} textAnchor="middle" fontSize={430} fontWeight="bold" fill="#fff">!</text>
+        </g>
+      )}
       <FacilityGlyph kind={fac.kind} s={fac.kind === 'exit' ? 700 : 550} />
       <text y={1150} textAnchor="middle" fontSize={330} fill="#555" style={{ userSelect: 'none', pointerEvents: 'none' }}>
         {fac.code}
       </text>
+      {alert && (
+        <text y={1560} textAnchor="middle" fontSize={300} fontWeight="bold" fill={overloaded ? '#c62828' : '#2e7d32'} style={{ userSelect: 'none', pointerEvents: 'none' }}>
+          {alert.assigned}/{alert.capacity}人{overloaded ? ` 超${alert.overflow}` : ''}
+        </text>
+      )}
     </g>
   );
 });
@@ -113,6 +141,8 @@ export type FloorPlanProps = {
   coverageCells: Pt[] | null;
   highlight: Pt | null;
   markPt: Pt | null;
+  /** 安全出口分流/容量（来自校验结果），传入即在图上标注「x/y 人」、超载出口红圈告警 */
+  exitAlerts?: Record<string, ExitAlert>;
   onRoomPointerDown?: (e: RPointerEvent<SVGGElement>, room: Room) => void;
   onFacilityPointerDown?: (e: RPointerEvent<SVGGElement>, fac: Facility) => void;
   onMarkPointerDown?: (e: RPointerEvent<SVGGElement>) => void;
@@ -123,7 +153,7 @@ export function FloorPlan(props: FloorPlanProps) {
   const {
     floor, view, svgRef, underlayUrl, showGrid = true,
     selected, drag, dragDelta, draftPoints, draftCursor,
-    coverageCells, highlight, markPt,
+    coverageCells, highlight, markPt, exitAlerts,
     onRoomPointerDown, onFacilityPointerDown, onMarkPointerDown,
   } = props;
   void svgRef;
@@ -177,6 +207,7 @@ export function FloorPlan(props: FloorPlanProps) {
           fac={f}
           selected={selected?.type === 'facility' && selected.id === f.id}
           delta={drag?.kind === 'facility' && drag.id === f.id ? dragDelta : { x: 0, y: 0 }}
+          alert={f.kind === 'exit' ? exitAlerts?.[f.id] : undefined}
           onPointerDown={onFacilityPointerDown ?? (() => {})}
         />
       ))}

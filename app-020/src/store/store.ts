@@ -12,7 +12,7 @@ import type {
   RuleSet,
   ValidationResult,
 } from '../model';
-import { DEFAULT_RULES } from '../rules/defaults';
+import { DEFAULT_RULES, DEFAULT_EXIT_WIDTH_M } from '../rules/defaults';
 import { nextCode, uid } from './id';
 import { polyAreaM2 } from '../lib/geometry';
 
@@ -31,12 +31,17 @@ function loadState(): AppState {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const s = JSON.parse(raw) as Partial<AppState>;
-      // 缺失的节用默认值补齐（如旧版本数据没有 rules/marks），而不是整体丢弃用户数据
+      // 缺失的节用默认值补齐（如旧版本数据没有 rules/marks），而不是整体丢弃用户数据；
+      // 新版规则字段（exitMinWidthM 等）也在此逐字段补齐
       if (s && Array.isArray(s.buildings) && s.floors) {
+        const rules: AppState['rules'] = structuredClone(DEFAULT_RULES);
+        for (const [k, def] of Object.entries(rules)) {
+          rules[k as BuildingKind] = { ...def, ...(s.rules?.[k as BuildingKind] ?? {}) };
+        }
         return {
           buildings: s.buildings,
           floors: s.floors,
-          rules: { ...structuredClone(DEFAULT_RULES), ...(s.rules ?? {}) },
+          rules,
           marks: s.marks ?? {},
         };
       }
@@ -207,6 +212,7 @@ export function addFacility(floorId: string, kind: FacilityKind, x: number, y: n
   updateFloor(floorId, (f) => {
     const fac: Facility = { id, kind, x, y, code: nextCode(f, kind), checks: [] };
     if (kind === 'extinguisher') fac.spec = { extType: 'dry_powder', weightKg: 4 };
+    if (kind === 'exit') fac.spec = { widthM: DEFAULT_EXIT_WIDTH_M };
     f.version++;
     f.facilities.push(fac);
     if (kind === 'exit') f.exits.push(id);
@@ -229,7 +235,7 @@ export function updateFacility(floorId: string, facilityId: string, patch: Parti
   updateFloor(floorId, (f) => {
     const fac = f.facilities.find((x) => x.id === facilityId);
     if (fac && patch.spec) {
-      fac.spec = patch.spec;
+      fac.spec = { ...fac.spec, ...patch.spec };
       f.version++;
     }
   });

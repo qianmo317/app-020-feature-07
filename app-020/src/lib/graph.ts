@@ -16,6 +16,15 @@ export type CorridorGraph = {
   pts: Float64Array; // [x0,y0,x1,y1,...]
   dist: Float64Array; // 到最近出口的路径距离 mm（Infinity=不可达）
   doorDist: number[]; // 每个输入 door 的路径距离 mm（Infinity=未连接）
+  /**
+   * 各已连接出口到各门的路径距离：perExitDoorDist[exitIdx][doorIdx]（mm，Infinity=不可达）。
+   * 仅含已连接出口、且最多前 12 个（与死端计算同上限）；出口顺序对应原 exitPts 中可连的出口。
+   * 供「房间人数按最近出口分配」使用，不参与疏散距离/死端判定。
+   */
+  perExitDoorDist: Float64Array[];
+  /** 各已连接出口到全部节点（栅格+出口+门）的距离，行序同 exitConnectedIdx */
+  perExitDist: Float64Array[];
+  exitConnectedIdx: number[]; // perExitDoorDist 第 k 行对应的原 exitPts 下标
   exitConnected: boolean[];
   deadEndMax: number; // mm，袋形走道（死端）最大长度
   nodeAtLattice: (x: number, y: number) => number; // 栅格点 → 节点序号（-1 不存在）
@@ -264,6 +273,14 @@ export function buildCorridorGraph(
     if (exitConnected[e]) deadEndExitIdx.push(e);
   }
   const perExit = deadEndExitIdx.map((e) => runDijkstra([{ u: nLattice + e, d: 0 }]));
+  // 各出口 → 各门的路径距离（附加节点 nLattice + nExits + k）
+  const perExitDoorDist = perExit.map((dd) => {
+    const arr = new Float64Array(nDoors).fill(Infinity);
+    for (let k = 0; k < nDoors; k++) {
+      if (doorDist[k] !== Infinity) arr[k] = dd[nLattice + nExits + k];
+    }
+    return arr;
+  });
   const deadEndMax = computeDeadEnd(
     perExit,
     deadEndExitIdx.map((e) => nLattice + e),
@@ -277,6 +294,9 @@ export function buildCorridorGraph(
     pts,
     dist,
     doorDist,
+    perExitDoorDist,
+    perExitDist: perExit,
+    exitConnectedIdx: deadEndExitIdx,
     exitConnected,
     deadEndMax,
     nodeAtLattice: (x: number, y: number) => {

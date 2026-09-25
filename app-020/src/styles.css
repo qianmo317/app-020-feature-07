@@ -122,6 +122,15 @@ input, select {
 .stat b { font-size: 16px; }
 .stat b.bad { color: var(--red); }
 .stat button { align-self: flex-start; font-size: 11px; padding: 1px 8px; }
+.stat.exitloads { gap: 3px; }
+.exitload {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font-size: 12px; background: #fff;
+}
+.exitload.bad { border-color: #e6b0b0; background: #fdf3f3; }
+.exitload .dot { margin-top: 0; }
+.dot.ok { background: var(--green); }
+.exitload b.bad { font-size: 12px; }
 .items { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
 .item {
   display: flex; gap: 6px; text-align: left; align-items: flex-start;

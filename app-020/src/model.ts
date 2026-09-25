@@ -9,6 +9,7 @@ export type Room = {
   name: string;
   usage: RoomUsage;
   areaM2: number;
+  /** 实际人数（留空时按用途密度估算，见 OCCUPANCY_DENSITY_M2_PER_PERSON） */
   occupants?: number;
 };
 
@@ -38,6 +39,8 @@ export type Facility = {
   spec?: {
     extType?: 'dry_powder' | 'co2' | 'water';
     weightKg?: number;
+    /** 安全出口净宽度（m），留空按 rules.exitMinWidthM 取值 */
+    widthM?: number;
   };
   checks: CheckRecord[];
 };
@@ -83,6 +86,8 @@ export type RuleSet = {
   extinguisherRadiusM: number;
   exitMinAreaM2: number; // 超过此面积需 ≥2 个安全出口
   exitMaxOccupants: number; // 超过此人数需 ≥2 个安全出口
+  exitMinWidthM: number; // 单个安全出口最小净宽度（m），GB 50016 5.5.19 取 0.9
+  exitWidthPer100M: number; // 每百人疏散净宽度（m/百人），按楼层取 GB 50016 表 5.5.21-1
   source: string; // 依据文号，报告中打印
   version: number; // 规则版本，修改即 +1，校验结果记录当时版本
 };
@@ -100,6 +105,16 @@ export type ValidationItem = {
   limit?: number;
 };
 
+export type ExitLoad = {
+  facilityId: string;
+  code: string;
+  point: Pt;
+  widthM: number; // 实际净宽度（m）
+  capacity: number; // 按宽度可通过人数
+  assigned: number; // 当前分配到该出口的人数
+  overflow: number; // assigned - capacity（>0 即超载）
+};
+
 export type ValidationResult = {
   checkedAt: string;
   pass: boolean;
@@ -109,6 +124,16 @@ export type ValidationResult = {
   deadEndM: number | null;
   coverage: { uncoveredM2: number; totalM2: number; pass: boolean; samples: Pt[] } | null;
   exits: { present: number; required: number };
+  /** 楼层人数与疏散宽度汇总 */
+  occupancy: {
+    occupants: number; // 用于计算的总人数（实填 + 估算）
+    estimated: number; // 其中按密度估算的人数
+    requiredWidthM: number; // 所需疏散总净宽度
+    availableWidthM: number; // 全部出口净宽度之和
+    widthPer100M: number; // 本次采用的百人宽度指标
+  };
+  /** 各安全出口的分配人数/容量（按最近出口分配），用于图上标挤 */
+  exitLoads: ExitLoad[];
   rulesSnapshot: {
     buildingKind: BuildingKind;
     version: number;
@@ -116,6 +141,8 @@ export type ValidationResult = {
     maxTravelDistanceM: number;
     deadEndDistanceM: number;
     extinguisherRadiusM: number;
+    exitMinWidthM: number;
+    exitWidthPer100M: number;
   };
 };
 

@@ -69,6 +69,20 @@ export function RulesPage() {
               />
             </label>
             <label className="row">
+              单个出口最小净宽度（m）
+              <input
+                type="number" min={0.6} max={2} step={0.05} value={r.exitMinWidthM}
+                onChange={(e) => updateRules(k.key, { exitMinWidthM: Number(e.target.value) })}
+              />
+            </label>
+            <label className="row">
+              每百人疏散净宽度（m/百人，规范按楼层取值且不小于此值）
+              <input
+                type="number" min={0.5} max={2} step={0.05} value={r.exitWidthPer100M}
+                onChange={(e) => updateRules(k.key, { exitWidthPer100M: Number(e.target.value) })}
+              />
+            </label>
+            <label className="row">
               依据文号（打印在报告上）
               <input value={r.source} onChange={(e) => updateRules(k.key, { source: e.target.value })} style={{ flex: 1 }} />
             </label>

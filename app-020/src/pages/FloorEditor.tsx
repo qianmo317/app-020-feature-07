@@ -6,7 +6,8 @@ import { floorLabel } from '../store/id';
 import { getBlob, putBlob, compressImage } from '../store/db';
 import { uid } from '../store/id';
 import { bboxOf } from '../lib/geometry';
-import { computeCoverage, validateFloor } from '../lib/engine';
+import { computeCoverage, validateFloor, estimateOccupants, estimateOccupantsByArea } from '../lib/engine';
+import { OCCUPANCY_DENSITY_M2_PER_PERSON } from '../rules/defaults';
 import { FloorPlan, mmFromEvent, wheelZoom, type DragState, type Selection, type Tool, type View } from '../components/FloorPlan';
 import { FacilityGlyph, USAGE_FILLS } from '../components/symbols';
 
@@ -259,6 +260,9 @@ export function FloorEditor({ floorId }: Props) {
   const selRoom: Room | undefined = selected?.type === 'room' ? floor.rooms.find((r) => r.id === selected.id) : undefined;
   const selFac: Facility | undefined = selected?.type === 'facility' ? floor.facilities.find((f) => f.id === selected.id) : undefined;
   const result = floor.lastValidation;
+  const exitAlerts = result
+    ? Object.fromEntries(result.exitLoads.map((l) => [l.facilityId, { assigned: l.assigned, capacity: l.capacity, overflow: l.overflow }]))
+    : {};
 
   return (
     <div className="editor" onKeyDown={onKeyDown} tabIndex={-1}>
@@ -381,6 +385,7 @@ export function FloorEditor({ floorId }: Props) {
             coverageCells={coverageCells}
             highlight={highlight}
             markPt={null}
+            exitAlerts={exitAlerts}
             onRoomPointerDown={onRoomDown}
             onFacilityPointerDown={onFacilityDown}
           />
@@ -405,20 +410,35 @@ export function FloorEditor({ floorId }: Props) {
                 {Object.entries(USAGE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select>
             </label>
-            <label className="row">人数 <input type="number" min={0} value={selRoom.occupants ?? ''} placeholder="按面积估算" onChange={(e) => updateRoom(floorId, selRoom.id, { occupants: e.target.value === '' ? undefined : Number(e.target.value) })} /></label>
-            <p className="hint">面积 {selRoom.areaM2.toFixed(1)}㎡（多边形自动计算）</p>
+            <label className="row">实际人数
+              <input
+                type="number" min={0} step={1}
+                value={selRoom.occupants ?? ''}
+                placeholder="留空按密度估算"
+                onChange={(e) => {
+                  const v = e.target.value === '' ? undefined : Number(e.target.value);
+                  updateRoom(floorId, selRoom.id, { occupants: v == null || Number.isNaN(v) ? undefined : Math.max(0, Math.round(v)) });
+                }}
+              />
+            </label>
+            <p className="hint">
+              面积 {selRoom.areaM2.toFixed(1)}㎡（多边形自动计算）·{' '}
+              {selRoom.occupants != null
+                ? <>按 <b>{estimateOccupants(selRoom)}</b> 人计算疏散（实填）</>
+                : <>留空按「{USAGE_LABELS[selRoom.usage]}」密度估算 <b>{estimateOccupantsByArea(selRoom)}</b> 人（{OCCUPANCY_DENSITY_M2_PER_PERSON[selRoom.usage] ?? 20}㎡/人）</>}
+            </p>
             <button className="danger" onClick={() => { deleteRoom(floorId, selRoom.id); setSelected(null); }}>删除房间</button>
           </section>
         )}
         {selFac && (
-          <FacilityInspector floorId={floorId} fac={selFac} onDelete={() => { deleteFacility(floorId, selFac.id); setSelected(null); }} />
+          <FacilityInspector floorId={floorId} fac={selFac} exitMinWidthM={rules.exitMinWidthM} onDelete={() => { deleteFacility(floorId, selFac.id); setSelected(null); }} />
         )}
       </aside>
     </div>
   );
 }
 
-function FacilityInspector({ floorId, fac, onDelete }: { floorId: string; fac: Facility; onDelete: () => void }) {
+function FacilityInspector({ floorId, fac, exitMinWidthM, onDelete }: { floorId: string; fac: Facility; exitMinWidthM: number; onDelete: () => void }) {
   const [note, setNote] = useState('');
   const [photoUrls, setPhotoUrls] = useState<Record<number, string>>({});
   const photoInput = useRef<HTMLInputElement | null>(null);
@@ -462,6 +482,15 @@ function FacilityInspector({ floorId, fac, onDelete }: { floorId: string; fac: F
     <section>
       <h4>设施 · {fac.code}</h4>
       <p className="hint">坐标 {(fac.x / 1000).toFixed(1)}m, {(fac.y / 1000).toFixed(1)}m</p>
+      {fac.kind === 'exit' && (
+        <label className="row">净宽度 (m)
+          <input
+            type="number" min={0.5} max={6} step={0.1}
+            value={fac.spec?.widthM ?? exitMinWidthM}
+            onChange={(e) => updateFacility(floorId, fac.id, { spec: { ...fac.spec, widthM: Math.max(0.1, Number(e.target.value)) } })}
+          />
+        </label>
+      )}
       {fac.kind === 'extinguisher' && (
         <>
           <label className="row">类型
