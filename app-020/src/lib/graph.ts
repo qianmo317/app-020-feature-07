@@ -16,9 +16,15 @@ export type CorridorGraph = {
   pts: Float64Array; // [x0,y0,x1,y1,...]
   dist: Float64Array; // 到最近出口的路径距离 mm（Infinity=不可达）
   doorDist: number[]; // 每个输入 door 的路径距离 mm（Infinity=未连接）
+  /** 已连接出口在 exitPts 中的下标（容量分配只计这些出口） */
+  connectedExitIdx: number[];
+  /** 各已连接出口做单源 Dijkstra 的距离表，顺序与 connectedExitIdx 一致 */
+  perExitDist: Float64Array[];
   exitConnected: boolean[];
   deadEndMax: number; // mm，袋形走道（死端）最大长度
   nodeAtLattice: (x: number, y: number) => number; // 栅格点 → 节点序号（-1 不存在）
+  /** 给定点附近（searchMm 内）最近的可行走栅格节点，找不到返回 -1（供房间质心挂网） */
+  nearestNode: (x: number, y: number, searchMm: number) => number;
 };
 
 const SQRT2 = Math.SQRT2;
@@ -257,16 +263,14 @@ export function buildCorridorGraph(
     if (doorDist[k] !== Infinity) doorDist[k] = dist[nLattice + nExits + k];
   }
 
-  // 死端（袋形走道）：对每个已连接出口各跑一次单源 Dijkstra（出口通常 ≤ 6 个，
-  // 上限取 12，更多时忽略多余出口——出口数量本身受 EXIT_COUNT 规则约束）。
-  const deadEndExitIdx: number[] = [];
-  for (let e = 0; e < nExits && deadEndExitIdx.length < 12; e++) {
-    if (exitConnected[e]) deadEndExitIdx.push(e);
+  const connectedExitIdx: number[] = [];
+  for (let e = 0; e < nExits && connectedExitIdx.length < 12; e++) {
+    if (exitConnected[e]) connectedExitIdx.push(e);
   }
-  const perExit = deadEndExitIdx.map((e) => runDijkstra([{ u: nLattice + e, d: 0 }]));
+  const perExitDist = connectedExitIdx.map((e) => runDijkstra([{ u: nLattice + e, d: 0 }]));
   const deadEndMax = computeDeadEnd(
-    perExit,
-    deadEndExitIdx.map((e) => nLattice + e),
+    perExitDist,
+    connectedExitIdx.map((e) => nLattice + e),
     nLattice,
   );
 
@@ -277,6 +281,8 @@ export function buildCorridorGraph(
     pts,
     dist,
     doorDist,
+    connectedExitIdx,
+    perExitDist,
     exitConnected,
     deadEndMax,
     nodeAtLattice: (x: number, y: number) => {
@@ -284,6 +290,32 @@ export function buildCorridorGraph(
       const j = Math.round((y - oy) / step);
       if (!walkAt(i, j)) return -1;
       return nodeIdx[cell(i, j)];
+    },
+    nearestNode: (x: number, y: number, searchMm: number) => {
+      // 先在 2m 小环内找（与走道共边的房间质心离走路网格 ≤ 房间半宽，多数在此命中），
+      // 找不到再放大到 searchMm，避免每个房间都扫整片对角线范围
+      const scan = (maxR: number) => {
+        const ci = Math.round((x - ox) / step);
+        const cj = Math.round((y - oy) / step);
+        let best = -1;
+        let bestD = Infinity;
+        for (let j = cj - maxR; j <= cj + maxR; j++) {
+          for (let i = ci - maxR; i <= ci + maxR; i++) {
+            if (!walkAt(i, j)) continue;
+            const u = nodeIdx[cell(i, j)];
+            const d = Math.hypot(pts[u * 2] - x, pts[u * 2 + 1] - y);
+            if (d < bestD) {
+              best = u;
+              bestD = d;
+            }
+          }
+        }
+        return { node: best, d: bestD };
+      };
+      const small = scan(Math.max(1, Math.ceil(6000 / step)));
+      if (small.node >= 0) return small.node;
+      const big = scan(Math.max(1, Math.ceil(searchMm / step)));
+      return big.d <= searchMm ? big.node : -1;
     },
   };
 }

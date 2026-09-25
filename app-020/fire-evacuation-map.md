@@ -55,7 +55,7 @@ type Room = { id: string; polygon: Pt[]; name: string;
 type Facility = { id: string;
                   kind: 'extinguisher'|'hydrant'|'exit_sign'|'emergency_light'|'exit'|'sprinkler';
                   x: number; y: number; code: string;      // 如 3F-EX-01
-                  spec?: { extType?: 'dry_powder'|'co2'|'water'; weightKg?: number };
+                  spec?: { extType?: 'dry_powder'|'co2'|'water'; weightKg?: number; exitWidthM?: number };
                   checks: CheckRecord[] };
 type CheckRecord = { date: string; status: 'ok'|'low_pressure'|'expired'|'damaged'|'missing';
                      photoKey?: string; note?: string };   // photoKey 指向 IndexedDB
@@ -64,14 +64,19 @@ type Floor = { id: string; buildingId: string; level: number; scaleMmPerUnit: nu
                underlay?: Underlay; version: number; lastValidation?: ValidationResult };
 type RuleSet = { buildingKind: BuildingKind; maxTravelDistanceM: number; deadEndDistanceM: number;
                  extinguisherRadiusM: number; exitMinAreaM2: number; exitMaxOccupants: number;
+                 egressWidthPer100M: number; exitDefaultWidthM: number;
                  source: string; version: number };
 type ValidationResult = { checkedAt: string; pass: boolean; items: ValidationItem[];
                           travelWorstM: number | null; travelWorstPoint?: Pt | null;
                           deadEndM: number | null; coverage: { uncoveredM2: number; totalM2: number;
                           pass: boolean; samples: Pt[] } | null;
                           exits: { present: number; required: number };
+                          occupants: number; roomOccupants: Record<string, number>;
+                          egress: { requiredWidthM: number; presentWidthM: number; pass: boolean };
+                          exitLoads: ExitLoad[];
                           rulesSnapshot: { buildingKind; version; source; maxTravelDistanceM;
                                            deadEndDistanceM; extinguisherRadiusM } };
+// ExitLoad = { facilityId; point; code; widthM; capacity; assigned; overflow; connected }
 ```
 全局状态为 `{ buildings, floors, rules, marks }`，`marks` 存各楼层的「您在此」坐标；默认规则集在 `src/rules/defaults.ts`（四类建筑各一套，均带依据文号，版本从 1 起）。
 
@@ -81,11 +86,12 @@ type ValidationResult = { checkedAt: string; pass: boolean; items: ValidationIte
 3. **门推断**（`geometry.ts` 的 `doorCandidates`）：沿房间边界每 100mm 采样，用两侧 80mm 探针判断是否命中走道，连续命中且长度 ≥400mm 取中点作为门。
 4. **袋形走道死端**（`graph.ts` 的 `computeDeadEnd`）：多出口时 `depth(n) = min over 出口对 (i,j) of (d(n,i) + d(n,j) − D(i,j)) / 2`；单出口时 `depth(n) = d(n, 唯一出口)`，取全部栅格点的最大值。可用出口上限取 12 个。
 5. **灭火器覆盖**（`engine.ts` 的 `computeCoverage`）：0.5m 格心采样，格心落在任一灭火器保护圆内即整格算已覆盖，未覆盖面积 = 未覆盖格数 × 0.25㎡；`uncoveredM2 <= max(2, 楼层面积 × 5%)` 才合格。用边长 `max(radius, 5m)` 的桶哈希，仅检查 3×3 邻桶内的点位。
-6. **安全出口数量**：`required = (楼层总面积 > exitMinAreaM2 或 估算人数 > exitMaxOccupants) ? 2 : 1`；人数未填时按用途密度估算（办公 10、商业 3、仓库 50、病房 8、走道 0、其他 20 ㎡/人）。
-7. **检查到期**（`checkDueInfo`）：按日期取最近一次记录，应检日期 = 最近检查 + 周期（灭火器 30 天、消火栓 30 天、疏散指示灯 90 天、应急照明 90 天、安全出口 180 天、喷淋 180 天）；`damaged`/`missing` 记 `defect`（error），无记录 `CHECK_MISSING`（warning），超周期 `CHECK_OVERDUE`（warning）；日期按本地时区拼接，避免 `toISOString` 跨时区提前一天。
-8. **结论与排序**：`pass = 无 error 项 且 灭火器覆盖合格`；列表 error 置前，同类按 `value / limit` 降序。
-9. **渲染**：全部走 SVG，1 用户单位 = 1mm，缩放是 viewBox 变换（不重算几何）；图纸含 1m/5m 网格、房间多边形与面积标注、设施符号、未覆盖栅格高亮、校验定位红圈。
-10. **状态管理**（`src/store/store.ts`）：手写外部 store + `useSyncExternalStore`；每次 `setState` 浅拷贝各顶层容器并替换被改动的对象引用，保证选择器能感知更新（`tests/store.test.ts` S1 就是这条的回归）。
+6. **安全出口数量**：`required = max(面积/人数规则 ? 2 : 1, ceil(所需总净宽 / 默认门宽))`；人数未填时按用途密度估算（办公 10、商业 3、仓库 50、病房 8、走道 0、其他 20 ㎡/人，`roomOccupants`）。
+7. **疏散净宽与出口容量**（GB 50016 表 5.5.21-1）：所需总净宽 = 楼层人数 × `egressWidthPer100M` / 100；单出口净宽取设施 `spec.exitWidthM`，未填用 `exitDefaultWidthM`（0.9m），单门容量 = 净宽 × 100 / 百人指标。人数按房间质心挂走道栅格网后逐出口单源 Dijkstra（`graph.ts` 暴露的 `perExitDist`）选**最近的已连通出口整体分配**（房内有出口时距离 0 优先）；总净宽不足报 `EXIT_WIDTH`，分配人数超过单门容量报 `EXIT_OVERFLOW`（含超载人数与定位点，图纸上红色虚圈 + 角标标出超载人数，出口下标 `分配/容量人`）。
+8. **检查到期**（`checkDueInfo`）：按日期取最近一次记录，应检日期 = 最近检查 + 周期（灭火器 30 天、消火栓 30 天、疏散指示灯 90 天、应急照明 90 天、安全出口 180 天、喷淋 180 天）；`damaged`/`missing` 记 `defect`（error），无记录 `CHECK_MISSING`（warning），超周期 `CHECK_OVERDUE`（warning）；日期按本地时区拼接，避免 `toISOString` 跨时区提前一天。
+9. **结论与排序**：`pass = 无 error 项 且 灭火器覆盖合格`；列表 error 置前，同类按 `value / limit` 降序。
+10. **渲染**：全部走 SVG，1 用户单位 = 1mm，缩放是 viewBox 变换（不重算几何）；图纸含 1m/5m 网格、房间多边形与面积/人数标注（实际人数蓝色、留空估算灰色「约 N 人」）、设施符号、未覆盖栅格高亮、超载出口红圈角标、校验定位红圈。
+11. **状态管理**（`src/store/store.ts`）：手写外部 store + `useSyncExternalStore`；每次 `setState` 浅拷贝各顶层容器并替换被改动的对象引用，保证选择器能感知更新（`tests/store.test.ts` S1 就是这条的回归）。旧版本存档的 rules 逐类与默认规则合并，补齐后加的净宽字段。
 
 ## 9. 交互与视觉要点
 - 编辑器三栏：左侧工具与元素库、中间 SVG 图纸、右侧校验面板与属性面板；滚轮以光标为锚点缩放（0.008 ~ 3），空白处或中键拖动平移，画多边形时 `Enter` 或双击起点闭合、`Esc` 取消。
@@ -95,7 +101,7 @@ type ValidationResult = { checkedAt: string; pass: boolean; items: ValidationIte
 - 破坏性操作（删建筑、删楼层）都有 `confirm` 二次确认；顶栏常驻「数据仅存于本机浏览器 · 断网可用」。
 
 ## 10. 验收标准
-- 单元测试 **7 个文件 / 59 个用例**全部通过（vitest 2.1.9，`npm test`）：疏散距离 20 组、灭火器覆盖 10 组、检查台账 7 组、编号 6 组、store 回归 10 组、规则切换 4 组、性能 2 组。
+- 单元测试 **8 个文件 / 69 个用例**全部通过（vitest 2.1.9，`npm test`）：疏散距离 20 组、灭火器覆盖 10 组、检查台账 7 组、编号 6 组、store 回归 10 组、规则切换 4 组、疏散人数/净宽/出口容量 10 组、性能 2 组。
 - 疏散距离：20 组沿路径用例与手工沿路径测量的误差 < 0.5m；其中第 04 组必须证明「直线距离 ≤40m 看着合格、沿路径 >50m 实际超标」被判 `TRAVEL_EXCEED` 且 `pass=false`。
 - 灭火器覆盖：10 组未覆盖面积与人工核算（圆面积差集、条带面积）误差 ≤10%，且格心采样总面积与房间面积一致（20×20 房间 = 400㎡）。
 - 台账：过期项 **100%** 出现在校验结果中（L6 按 `facilityId` 对账，无遗漏也无多余）；`damaged`/`missing` 为 error 级且排在最前。

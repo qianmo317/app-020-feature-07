@@ -131,6 +131,11 @@ input, select {
 .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; }
 .dot.error { background: var(--red); }
 .dot.warning { background: var(--amber); }
+.dot.ok { background: #2e7d32; }
+.exitloads { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.exitload { background: #f7faf7; }
+.exitload.error { background: #fdf3f3; border-color: #e6b3b3; }
+.exitload.warning { background: #fff8ec; }
 .spinner { color: var(--blue); font-weight: 400; font-size: 12px; }
 
 .checks { max-height: 180px; overflow-y: auto; }

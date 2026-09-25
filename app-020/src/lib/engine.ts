@@ -10,14 +10,14 @@ import type {
 import {
   MM_PER_M,
   dist,
+  bboxOf,
   gridPointsInPoly,
   pointInPoly,
   polyAreaM2,
   doorCandidates,
-  bboxOf,
 } from './geometry';
 import { buildCorridorGraph, type DoorInput } from './graph';
-import { CHECK_INTERVAL_DAYS, OCCUPANCY_DENSITY_M2_PER_PERSON } from '../rules/defaults';
+import { CHECK_INTERVAL_DAYS, DEFAULT_EXIT_WIDTH_M, OCCUPANCY_DENSITY_M2_PER_PERSON } from '../rules/defaults';
 
 const TRAVEL_STEP_MM = 250; // 走道栅格 0.25m，保证与手工沿路径测量误差 < 0.5m
 const ROOM_STEP_MM = 500; // 房间内部采样 0.5m
@@ -141,11 +141,33 @@ function roomWorstTravelM(room: Room, doors: Pt[], doorPathMm: number[], exitsIn
   return { worstM: worst / MM_PER_M, point: worstPt };
 }
 
-function estimateOccupants(room: Room): number {
-  if (room.occupants != null && room.occupants >= 0) return room.occupants;
+/** 房间采用人数：填了实际人数用实际值（含 0），留空按用途密度与面积估算 */
+export function roomOccupants(room: Room): number {
+  if (room.occupants != null && room.occupants >= 0) return Math.round(room.occupants);
   const density = OCCUPANCY_DENSITY_M2_PER_PERSON[room.usage] ?? 20;
   if (density <= 0) return 0;
-  return Math.round(room.areaM2 / density);
+  return Math.max(0, Math.round(room.areaM2 / density));
+}
+
+/** 出口采用净宽：出口设施单独填了用填的，否则按规则默认净宽 */
+export function exitWidthM(facility: { kind: string; spec?: { exitWidthM?: number } }, rules: RuleSet): number {
+  const w = facility.spec?.exitWidthM;
+  if (w != null && w > 0) return w;
+  return rules.exitDefaultWidthM || DEFAULT_EXIT_WIDTH_M;
+}
+
+/** 该净宽对应的可通过人数（百人宽度指标：人数 = 净宽 × 100 / 每百人净宽） */
+export function exitCapacity(widthM: number, rules: RuleSet): number {
+  if (!(rules.egressWidthPer100M > 0)) return Infinity;
+  return Math.floor((widthM * 100) / rules.egressWidthPer100M);
+}
+
+/** 多边形质心（mm，顶点均值；用于把房间挂到走道栅格图上） */
+function polyCentroid(poly: Pt[]): Pt {
+  return {
+    x: poly.reduce((s, p) => s + p.x, 0) / poly.length,
+    y: poly.reduce((s, p) => s + p.y, 0) / poly.length,
+  };
 }
 
 const days = (n: number) => n * 24 * 3600 * 1000;
@@ -191,6 +213,30 @@ export function validateFloor(floor: Floor, rules: RuleSet, now: number = Date.n
   let worstPoint: Pt | null = null;
   let deadEndM: number | null = null;
 
+  // 出口负载（按 exits 顺序初始化，后面就近分配人数）
+  const loads = exits.map((f) => {
+    const w = exitWidthM(f, rules);
+    return {
+      facilityId: f.id,
+      point: { x: f.x, y: f.y },
+      code: f.code,
+      widthM: w,
+      capacity: exitCapacity(w, rules),
+      assigned: 0,
+      overflow: 0,
+      connected: false,
+    };
+  });
+  // roomId → 采用人数，结果带回给图纸/面板
+  const roomOcc: Record<string, number> = {};
+  let occupantsTotal = 0;
+  for (const r of floor.rooms) {
+    const n = roomOccupants(r);
+    roomOcc[r.id] = n;
+    occupantsTotal += n;
+  }
+  let unassignedOccupants = 0;
+
   if (walkPolys.length && exitPts.length) {
     // 房间门推断
     const doorPtsByRoom = new Map<string, Pt[]>();
@@ -204,7 +250,16 @@ export function validateFloor(floor: Floor, rules: RuleSet, now: number = Date.n
     }
     const g = buildCorridorGraph(walkPolys, exitPts, doorInputs, TRAVEL_STEP_MM);
 
+    // 门坐标 → doorInputs 下标（人数分配与疏散距离共用）
+    const doorIndexByRoom = new Map<string, number[]>();
+    for (let k = 0; k < doorInputs.length; k++) {
+      const list = doorIndexByRoom.get(doorInputs[k].roomId) ?? [];
+      list.push(k);
+      doorIndexByRoom.set(doorInputs[k].roomId, list);
+    }
+
     exits.forEach((f, i) => {
+      loads[i].connected = g.exitConnected[i];
       if (!g.exitConnected[i]) {
         items.push({
           severity: 'error',
@@ -257,10 +312,10 @@ export function validateFloor(floor: Floor, rules: RuleSet, now: number = Date.n
         continue;
       }
       // 门对应的路径距离（毫米，与房内直线段同单位相加）
-      const doorPathMm: number[] = doors.map((d) => {
-        const idx = doorInputs.findIndex((di) => di.pt.x === d.x && di.pt.y === d.y);
-        return idx >= 0 && g.doorDist[idx] !== Infinity ? g.doorDist[idx] : Infinity;
-      });
+      const doorIdx = doorIndexByRoom.get(r.id) ?? [];
+      const doorPathMm: number[] = doorIdx.map((k) =>
+        g.doorDist[k] !== Infinity ? g.doorDist[k] : Infinity,
+      );
       const res = roomWorstTravelM(r, doors, doorPathMm, exitsInRoom);
       if (res && res.worstM > rules.maxTravelDistanceM + 0.001) {
         items.push({
@@ -301,6 +356,47 @@ export function validateFloor(floor: Floor, rules: RuleSet, now: number = Date.n
         }
       }
     }
+
+    // 人数就近分配到安全出口：每个房间按「最近出口」整体分配（疏散时就近选择）
+    for (const r of floor.rooms) {
+      const n = roomOcc[r.id] ?? 0;
+      if (n <= 0) continue;
+      // 房间质心挂到最近可行走栅格（搜索半径取房间对角线，保证 L 形房也能挂上）
+      const c = polyCentroid(r.polygon);
+      const rbb = bboxOf([r.polygon]);
+      const diag = Math.hypot(rbb.maxX - rbb.minX, rbb.maxY - rbb.minY);
+      const node = g.nearestNode(c.x, c.y, diag);
+      let bestExit = -1;
+      let bestD = Infinity;
+      if (node >= 0) {
+        for (let k = 0; k < g.connectedExitIdx.length; k++) {
+          const exitIdx = g.connectedExitIdx[k];
+          // 出口在房间内部 → 房内直线，距离 0 优先
+          if (pointInPoly(exitPts[exitIdx], r.polygon)) {
+            bestExit = exitIdx;
+            bestD = 0;
+            break;
+          }
+          const d = g.perExitDist[k][node];
+          if (d < bestD) {
+            bestD = d;
+            bestExit = exitIdx;
+          }
+        }
+      }
+      if (bestExit < 0) {
+        // 挂不上走路网的房间（如与走道不共边）：按质心直线最近的已连接出口兜底
+        for (const exitIdx of g.connectedExitIdx) {
+          const d = dist(c, exitPts[exitIdx]);
+          if (d < bestD) {
+            bestD = d;
+            bestExit = exitIdx;
+          }
+        }
+      }
+      if (bestExit < 0) unassignedOccupants += n;
+      else loads[bestExit].assigned += n;
+    }
   } else if (walkPolys.length && !exitPts.length) {
     items.push({ severity: 'error', type: 'EXIT_COUNT', message: '未布置任何安全出口' });
   }
@@ -322,15 +418,64 @@ export function validateFloor(floor: Floor, rules: RuleSet, now: number = Date.n
 
   // 安全出口数量 vs 面积/人数
   const areaM2 = floor.rooms.reduce((s, r) => s + polyAreaM2(r.polygon), 0);
-  const occupants = floor.rooms.reduce((s, r) => s + estimateOccupants(r), 0);
-  const required = areaM2 > rules.exitMinAreaM2 || occupants > rules.exitMaxOccupants ? 2 : 1;
+
+  // 疏散净宽与单出口容量（人数已在上面就近分配到各出口）
+  const requiredWidthM = rules.egressWidthPer100M > 0
+    ? (occupantsTotal * rules.egressWidthPer100M) / 100
+    : 0;
+  // 当前净宽合计只计已连通出口；未连通出口另有 EXIT_NOT_CONNECTED 报错
+  const presentWidthM = loads.filter((l) => l.connected).reduce((s, l) => s + l.widthM, 0);
+  const widthPass = presentWidthM + 1e-9 >= requiredWidthM;
+  // 需要的出口数：面积/人数规则 与 「所需总净宽 ÷ 单门默认净宽」取大
+  let required = areaM2 > rules.exitMinAreaM2 || occupantsTotal > rules.exitMaxOccupants ? 2 : 1;
+  if (rules.exitDefaultWidthM > 0 && requiredWidthM > 0) {
+    required = Math.max(required, Math.ceil(requiredWidthM / rules.exitDefaultWidthM - 1e-9));
+  }
+
   if (exitPts.length && exits.length < required) {
     items.push({
       severity: 'error',
       type: 'EXIT_COUNT',
       value: exits.length,
       limit: required,
-      message: `安全出口 ${exits.length} 个，少于要求数量（面积 ${areaM2.toFixed(0)}㎡ / 人数约 ${occupants} → 需 ≥ ${required} 个）`,
+      message: `安全出口 ${exits.length} 个，少于要求数量（面积 ${areaM2.toFixed(0)}㎡ / 人数 ${occupantsTotal} → 需 ≥ ${required} 个）`,
+    });
+  }
+
+  // 总净宽不足
+  if (exitPts.length && !widthPass) {
+    items.push({
+      severity: 'error',
+      type: 'EXIT_WIDTH',
+      value: presentWidthM,
+      limit: requiredWidthM,
+      message: `疏散总净宽 ${presentWidthM.toFixed(2)}m 不足（人数 ${occupantsTotal} × 百人指标 ${rules.egressWidthPer100M}m/百人 → 需 ≥ ${requiredWidthM.toFixed(2)}m）`,
+    });
+  }
+
+  // 单出口超载：分配人数超过该净宽可通过人数
+  for (const l of loads) {
+    l.overflow = Math.max(0, l.assigned - l.capacity);
+    if (l.connected && l.overflow > 0) {
+      items.push({
+        severity: 'error',
+        type: 'EXIT_OVERFLOW',
+        facilityId: l.facilityId,
+        point: l.point,
+        value: l.assigned,
+        limit: l.capacity,
+        message: `安全出口 ${l.code} 净宽 ${l.widthM.toFixed(2)}m 可通过 ${l.capacity} 人，就近分配 ${l.assigned} 人，超载 ${l.overflow} 人`,
+      });
+    }
+  }
+
+  // 有人但所有出口都不可达（如房间与走道不共边）
+  if (exitPts.length && unassignedOccupants > 0) {
+    items.push({
+      severity: 'warning',
+      type: 'EXIT_NO_ROUTE',
+      value: unassignedOccupants,
+      message: `${unassignedOccupants} 人无法就近分配到安全出口（房间与走道/出口不连通）`,
     });
   }
 
@@ -386,6 +531,10 @@ export function validateFloor(floor: Floor, rules: RuleSet, now: number = Date.n
       ? { uncoveredM2: coverage.uncoveredM2, totalM2: coverage.totalM2, pass: coverage.pass, samples: coverage.samples }
       : null,
     exits: { present: exits.length, required },
+    occupants: occupantsTotal,
+    roomOccupants: roomOcc,
+    egress: { requiredWidthM, presentWidthM, pass: widthPass },
+    exitLoads: loads,
     rulesSnapshot: {
       buildingKind: rules.buildingKind,
       version: rules.version,

@@ -1,6 +1,7 @@
 import { memo, type PointerEvent as RPointerEvent, type WheelEvent as RWheelEvent } from 'react';
-import type { FacilityKind, Floor, Facility, Pt, Room } from '../model';
+import type { ExitLoad, FacilityKind, Floor, Facility, Pt, Room } from '../model';
 import { USAGE_FILLS, FacilityGlyph } from './symbols';
+import { roomOccupants } from '../lib/engine';
 
 export type Tool = 'select' | 'pan' | 'room' | 'corridor' | FacilityKind;
 export type Selection = { type: 'room' | 'facility'; id: string } | null;
@@ -63,6 +64,11 @@ const RoomShape = memo(function RoomShape({
         <tspan x={cx} dy={480} fontSize={320} fill="#888">
           {room.areaM2.toFixed(1)}㎡
         </tspan>
+        {roomOccupants(room) > 0 && (
+          <tspan x={cx} dy={420} fontSize={320} fill={room.occupants != null ? '#1565c0' : '#888'}>
+            {room.occupants != null ? `${room.occupants}人` : `约${roomOccupants(room)}人`}
+          </tspan>
+        )}
       </text>
     </g>
   );
@@ -72,15 +78,18 @@ const FacilityShape = memo(function FacilityShape({
   fac,
   selected,
   delta,
+  load,
   onPointerDown,
 }: {
   fac: Facility;
   selected: boolean;
   delta: Pt;
+  load?: ExitLoad;
   onPointerDown: (e: RPointerEvent<SVGGElement>, fac: Facility) => void;
 }) {
   const x = fac.x + delta.x;
   const y = fac.y + delta.y;
+  const overloaded = !!load && load.overflow > 0;
   return (
     <g
       transform={`translate(${x},${y})`}
@@ -91,10 +100,26 @@ const FacilityShape = memo(function FacilityShape({
       style={{ cursor: 'pointer' }}
     >
       {selected && <circle r={900} fill="none" stroke="#1976d2" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+      {overloaded && (
+        <>
+          <circle r={1200} fill="none" stroke="#c62828" strokeWidth={4} strokeDasharray="300 200" vectorEffect="non-scaling-stroke" />
+          <g transform="translate(950,-950)">
+            <circle r={380} fill="#c62828" stroke="#fff" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+            <text textAnchor="middle" y={140} fontSize={420} fill="#fff" fontWeight="bold" style={{ userSelect: 'none', pointerEvents: 'none' }}>
+              {load!.overflow}
+            </text>
+          </g>
+        </>
+      )}
       <FacilityGlyph kind={fac.kind} s={fac.kind === 'exit' ? 700 : 550} />
       <text y={1150} textAnchor="middle" fontSize={330} fill="#555" style={{ userSelect: 'none', pointerEvents: 'none' }}>
         {fac.code}
       </text>
+      {fac.kind === 'exit' && load && (
+        <text y={1560} textAnchor="middle" fontSize={300} fill={overloaded ? '#c62828' : '#2e7d32'} fontWeight={overloaded ? 'bold' : 'normal'} style={{ userSelect: 'none', pointerEvents: 'none' }}>
+          {load.assigned}/{load.capacity}人
+        </text>
+      )}
     </g>
   );
 });
@@ -177,6 +202,7 @@ export function FloorPlan(props: FloorPlanProps) {
           fac={f}
           selected={selected?.type === 'facility' && selected.id === f.id}
           delta={drag?.kind === 'facility' && drag.id === f.id ? dragDelta : { x: 0, y: 0 }}
+          load={floor.lastValidation?.exitLoads.find((l) => l.facilityId === f.id)}
           onPointerDown={onFacilityPointerDown ?? (() => {})}
         />
       ))}

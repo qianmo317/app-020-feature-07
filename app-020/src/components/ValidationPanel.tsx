@@ -5,6 +5,9 @@ const TYPE_LABELS: Record<string, string> = {
   TRAVEL_EXCEED: '疏散距离超限',
   DEADEND_EXCEED: '袋形走道超限',
   EXIT_COUNT: '安全出口数量',
+  EXIT_WIDTH: '疏散总净宽不足',
+  EXIT_OVERFLOW: '出口超载',
+  EXIT_NO_ROUTE: '人员无路疏散',
   EXIT_NOT_CONNECTED: '出口未连通',
   COVERAGE_UNCOVERED: '灭火器覆盖不足',
   CHECK_OVERDUE: '检查过期',
@@ -73,7 +76,36 @@ export function ValidationPanel({ floorId, result, busy, rules, onLocate }: Prop
               </b>
               <span>现有/需要</span>
             </div>
+            <div className="stat">
+              <label>楼层人数</label>
+              <b>{result.occupants}</b>
+              <span>实际填写 + 留空估算</span>
+            </div>
+            <div className="stat">
+              <label>疏散净宽（m）</label>
+              <b className={!result.egress.pass ? 'bad' : ''}>
+                {result.egress.presentWidthM.toFixed(2)}/{result.egress.requiredWidthM.toFixed(2)}
+              </b>
+              <span>现有/需要 · {rules.egressWidthPer100M}m/百人</span>
+            </div>
           </div>
+          {result.exitLoads.length > 0 && (
+            <div className="exitloads">
+              {result.exitLoads.map((l) => (
+                <button
+                  key={l.facilityId}
+                  className={`item exitload ${l.overflow > 0 ? 'error' : l.connected ? '' : 'warning'}`}
+                  onClick={() => onLocate(l.point, { type: 'facility', id: l.facilityId })}
+                >
+                  <span className={`dot ${l.overflow > 0 ? 'error' : 'ok'}`} />
+                  <span>
+                    <b>{l.code}</b> 净宽 {l.widthM.toFixed(2)}m · 容量 {l.capacity} 人 · 分配 <b className={l.overflow > 0 ? 'bad' : ''}>{l.assigned}</b> 人
+                    {l.overflow > 0 ? ` → 超 ${l.overflow} 人` : !l.connected ? ' · 出口未连通' : ''}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="items">
             {result.items.length === 0 && <p className="hint">无不合规项</p>}
             {result.items.map((it, i) => (

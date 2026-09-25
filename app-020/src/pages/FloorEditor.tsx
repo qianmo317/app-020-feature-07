@@ -6,7 +6,8 @@ import { floorLabel } from '../store/id';
 import { getBlob, putBlob, compressImage } from '../store/db';
 import { uid } from '../store/id';
 import { bboxOf } from '../lib/geometry';
-import { computeCoverage, validateFloor } from '../lib/engine';
+import { computeCoverage, exitCapacity, exitWidthM, roomOccupants, validateFloor } from '../lib/engine';
+import { OCCUPANCY_DENSITY_M2_PER_PERSON } from '../rules/defaults';
 import { FloorPlan, mmFromEvent, wheelZoom, type DragState, type Selection, type Tool, type View } from '../components/FloorPlan';
 import { FacilityGlyph, USAGE_FILLS } from '../components/symbols';
 
@@ -348,7 +349,9 @@ export function FloorEditor({ floorId }: Props) {
       {/* 中栏：图纸 */}
       <div className="canvas-wrap">
         <div className="canvas-toolbar">
-          <span>{floorLabel(floor.level)} · {floor.rooms.length} 房间 · {floor.facilities.length} 设施</span>
+          <span>
+            {floorLabel(floor.level)} · {floor.rooms.length} 房间 · {floor.facilities.length} 设施 · 楼层人数 {result?.occupants ?? floor.rooms.reduce((s, r) => s + roomOccupants(r), 0)}
+          </span>
           <button className={coverageCells ? 'on' : ''} onClick={showCoverage}>
             {coverageCells ? '隐藏未覆盖区域' : '显示未覆盖区域'}
           </button>
@@ -405,8 +408,14 @@ export function FloorEditor({ floorId }: Props) {
                 {Object.entries(USAGE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select>
             </label>
-            <label className="row">人数 <input type="number" min={0} value={selRoom.occupants ?? ''} placeholder="按面积估算" onChange={(e) => updateRoom(floorId, selRoom.id, { occupants: e.target.value === '' ? undefined : Number(e.target.value) })} /></label>
-            <p className="hint">面积 {selRoom.areaM2.toFixed(1)}㎡（多边形自动计算）</p>
+            <label className="row">人数（留空按面积估算）
+              <input type="number" min={0} value={selRoom.occupants ?? ''} placeholder={`按密度约 ${roomOccupants(selRoom)} 人`} onChange={(e) => updateRoom(floorId, selRoom.id, { occupants: e.target.value === '' ? undefined : Number(e.target.value) })} />
+            </label>
+            <p className="hint">
+              面积 {selRoom.areaM2.toFixed(1)}㎡（多边形自动计算）· 采用人数 <b>{roomOccupants(selRoom)}</b> 人
+              {selRoom.occupants == null && (OCCUPANCY_DENSITY_M2_PER_PERSON[selRoom.usage] ?? 0) > 0
+                && `（按 ${OCCUPANCY_DENSITY_M2_PER_PERSON[selRoom.usage]}㎡/人估算）`}
+            </p>
             <button className="danger" onClick={() => { deleteRoom(floorId, selRoom.id); setSelected(null); }}>删除房间</button>
           </section>
         )}
@@ -462,6 +471,9 @@ function FacilityInspector({ floorId, fac, onDelete }: { floorId: string; fac: F
     <section>
       <h4>设施 · {fac.code}</h4>
       <p className="hint">坐标 {(fac.x / 1000).toFixed(1)}m, {(fac.y / 1000).toFixed(1)}m</p>
+      {fac.kind === 'exit' && (
+        <ExitWidthEditor floorId={floorId} fac={fac} />
+      )}
       {fac.kind === 'extinguisher' && (
         <>
           <label className="row">类型
@@ -518,5 +530,34 @@ function FacilityInspector({ floorId, fac, onDelete }: { floorId: string; fac: F
       </div>
       <button className="danger" onClick={onDelete}>删除设施</button>
     </section>
+  );
+}
+
+/** 安全出口净宽属性：填了按填写值算容量，留空按规则默认净宽 */
+function ExitWidthEditor({ floorId, fac }: { floorId: string; fac: Facility }) {
+  const rules = useStore((s) => {
+    const f = s.floors[floorId];
+    const kind = f ? s.buildings.find((b) => b.id === f.buildingId)?.kind ?? 'office' : 'office';
+    return s.rules[kind];
+  });
+  const width = exitWidthM(fac, rules);
+  const cap = exitCapacity(width, rules);
+  return (
+    <>
+      <label className="row">出口净宽 (m)
+        <input
+          type="number" min={0.6} step={0.1}
+          value={fac.spec?.exitWidthM ?? ''}
+          placeholder={`默认 ${rules.exitDefaultWidthM}m`}
+          onChange={(e) => {
+            const v = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value));
+            updateFacility(floorId, fac.id, { spec: { ...fac.spec, exitWidthM: v } });
+          }}
+        />
+      </label>
+      <p className="hint">
+        采用净宽 <b>{width.toFixed(2)}m</b> · 按百人指标 {rules.egressWidthPer100M}m/百人，可通过约 <b>{cap === Infinity ? '∞' : cap}</b> 人
+      </p>
+    </>
   );
 }

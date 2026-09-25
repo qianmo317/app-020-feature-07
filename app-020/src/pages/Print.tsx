@@ -75,8 +75,11 @@ export function PrintPage({ floorId }: { floorId: string }) {
     const header = '点位编号,类型,X(m),Y(m),规格,最近检查,状态';
     const lines = floor.facilities.map((f) => {
       const sorted = [...f.checks].sort((a, b) => b.date.localeCompare(a.date));
-      const spec = f.spec ? `${f.spec.extType ?? ''} ${f.spec.weightKg ?? ''}kg`.trim() : '';
-      return [f.code, FACILITY_LABELS[f.kind], (f.x / 1000).toFixed(1), (f.y / 1000).toFixed(1), spec, sorted[0]?.date ?? '未检', sorted[0]?.status ?? 'missing'].join(',');
+      const specParts: string[] = [];
+      if (f.spec?.extType) specParts.push(f.spec.extType);
+      if (f.spec?.weightKg != null) specParts.push(`${f.spec.weightKg}kg`);
+      if (f.spec?.exitWidthM != null) specParts.push(`净宽${f.spec.exitWidthM}m`);
+      return [f.code, FACILITY_LABELS[f.kind], (f.x / 1000).toFixed(1), (f.y / 1000).toFixed(1), specParts.join(' ').trim(), sorted[0]?.date ?? '未检', sorted[0]?.status ?? 'missing'].join(',');
     });
     download(`${floorLabel(floor.level)}_设施台账.csv`, [header, ...lines].join('\n'));
   };
@@ -247,7 +250,10 @@ export function PrintPage({ floorId }: { floorId: string }) {
         <div className="sheet-foot">
           {result ? (
             <>
-              <span>校验结论：{result.pass ? '合规' : '存在不合规项'} · 疏散最远 {result.travelWorstM != null ? `${result.travelWorstM.toFixed(1)}m` : '—'}（限值 {result.rulesSnapshot.maxTravelDistanceM}m） · 规则 {result.rulesSnapshot.buildingKind} v{result.rulesSnapshot.version}</span>
+              <span>
+                校验结论：{result.pass ? '合规' : '存在不合规项'} · 疏散最远 {result.travelWorstM != null ? `${result.travelWorstM.toFixed(1)}m` : '—'}（限值 {result.rulesSnapshot.maxTravelDistanceM}m）
+                {' '}· 人数 {result.occupants} · 净宽 {result.egress.presentWidthM.toFixed(2)}/{result.egress.requiredWidthM.toFixed(2)}m · 规则 {result.rulesSnapshot.buildingKind} v{result.rulesSnapshot.version}
+              </span>
               <span>依据文号：{result.rulesSnapshot.source} ｜ 校验时间：{new Date(result.checkedAt).toLocaleString('zh-CN')}</span>
             </>
           ) : (

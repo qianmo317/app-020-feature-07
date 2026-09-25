@@ -69,6 +69,20 @@ export function RulesPage() {
               />
             </label>
             <label className="row">
+              每百人疏散净宽（m/百人，GB 50016 表5.5.21-1）
+              <input
+                type="number" min={0.3} max={1.5} step={0.05} value={r.egressWidthPer100M}
+                onChange={(e) => updateRules(k.key, { egressWidthPer100M: Number(e.target.value) })}
+              />
+            </label>
+            <label className="row">
+              出口默认净宽（m，未单独填写时采用）
+              <input
+                type="number" min={0.6} max={2.4} step={0.05} value={r.exitDefaultWidthM}
+                onChange={(e) => updateRules(k.key, { exitDefaultWidthM: Number(e.target.value) })}
+              />
+            </label>
+            <label className="row">
               依据文号（打印在报告上）
               <input value={r.source} onChange={(e) => updateRules(k.key, { source: e.target.value })} style={{ flex: 1 }} />
             </label>

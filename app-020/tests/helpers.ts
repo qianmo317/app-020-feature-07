@@ -32,6 +32,7 @@ export type FacSpec = {
   x: number; // m
   y: number; // m
   checks?: Facility['checks'];
+  spec?: Facility['spec'];
 };
 
 export function mkFloor(rooms: Room[], facs: FacSpec[], kind: BuildingKind = 'office'): { floor: Floor; rules: RuleSet } {
@@ -42,6 +43,7 @@ export function mkFloor(rooms: Room[], facs: FacSpec[], kind: BuildingKind = 'of
     y: f.y * M,
     code: `${f.kind}-${i}`,
     checks: f.checks ?? [],
+    spec: f.spec,
   }));
   const floor: Floor = {
     id: 'floor1',
